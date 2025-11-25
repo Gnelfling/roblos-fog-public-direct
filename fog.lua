@@ -51,6 +51,12 @@ local THUNDER_MIN_INT = 10
 local THUNDER_MAX_INT = 20
 local THUNDER_IDS = {"4961240438","6767192500","7768747890","6409267922","7768751498"}
 
+-- ===== Fog fade settings (user request) =====
+local FOG_VANISH_HEIGHT = 20000     -- fog removed at/above this height
+local FOG_START_FADE    = 8000      -- begin fading from this height
+local RAIN_FOG_BASE_DENSITY = 0.02  -- very subtle base density when low
+local RAIN_FOG_BASE_HAZE    = 0.8   -- subtle haze
+
 -- ===== helpers =====
 local function clamp(v, a, b) if v < a then return a elseif v > b then return b else return v end end
 local function lerp(a,b,t) return a + (b-a) * t end
@@ -82,21 +88,23 @@ local originalAtmosphere = {
     Haze    = atmosphere.Haze,
 }
 
+-- Keep older RAIN_FOG_* definitions for compatibility but we will use the new subtle base
 local RAIN_FOG_BOOST = 0.45
 local RAIN_FOG_DENSITY = math.clamp((originalAtmosphere.Density or 0) + RAIN_FOG_BOOST, 0, 1)
 local RAIN_FOG_HAZE    = (originalAtmosphere.Haze and originalAtmosphere.Haze > 0) and (originalAtmosphere.Haze + 4) or 6
 
+-- Replacement: lightweight setFogEnabled that sets base density but per-frame will modulate by height
 local function setFogEnabled(on, logLabel)
     if on then
-        atmosphere.Density = RAIN_FOG_DENSITY
-        atmosphere.Haze = RAIN_FOG_HAZE
+        atmosphere.Density = RAIN_FOG_BASE_DENSITY
+        atmosphere.Haze = RAIN_FOG_BASE_HAZE
         atmosphere.Color = originalAtmosphere.Color or Color3.fromRGB(200,200,200)
         atmosphere.Offset = originalAtmosphere.Offset or 0
         atmosphere.Glare = originalAtmosphere.Glare or 0
         if logLabel then
-            logLabel.Text = logLabel.Text .. "\nFog ENABLED (Density="..tostring(atmosphere.Density)..")"
+            logLabel.Text = logLabel.Text .. "\nFog ENABLED (base density="..tostring(RAIN_FOG_BASE_DENSITY)..")"
         end
-        logConsole("Fog ENABLED")
+        logConsole("Fog ENABLED (base density="..tostring(RAIN_FOG_BASE_DENSITY)..")")
     else
         atmosphere.Density = originalAtmosphere.Density or 0
         atmosphere.Haze = originalAtmosphere.Haze or 0
@@ -106,7 +114,7 @@ local function setFogEnabled(on, logLabel)
         if logLabel then
             logLabel.Text = logLabel.Text .. "\nFog DISABLED (restored)"
         end
-        logConsole("Fog DISABLED")
+        logConsole("Fog DISABLED (restored)")
     end
 end
 
@@ -387,6 +395,36 @@ RunService.Heartbeat:Connect(function(dt)
             sound_1000.Volume  = vol_1000
             sound_7000.Volume  = vol_7000
         end)
+
+        -- ----- NEW: Height-based fog modulation (smooth fade to 0 at 20,000 studs) -----
+        -- compute scale: 1 at/below FOG_START_FADE, 0 at/above FOG_VANISH_HEIGHT, linear in between
+        local scale = 1
+        if y <= FOG_START_FADE then
+            scale = 1
+        else
+            scale = clamp(1 - ((y - FOG_START_FADE) / math.max(1, FOG_VANISH_HEIGHT - FOG_START_FADE)), 0, 1)
+        end
+
+        -- smoothing factor per-frame for gentle transitions
+        local smoothFactor = 0.12
+
+        -- target values (fog off if scale==0)
+        local targetDensity = RAIN_FOG_BASE_DENSITY * scale
+        local targetHaze = RAIN_FOG_BASE_HAZE * math.max(0.12, scale)
+
+        -- apply exponential smoothing so atmosphere changes are gradual
+        local currentDensity = atmosphere.Density or 0
+        atmosphere.Density = currentDensity + (targetDensity - currentDensity) * smoothFactor
+
+        local currentHaze = atmosphere.Haze or 0
+        atmosphere.Haze = currentHaze + (targetHaze - currentHaze) * smoothFactor
+
+        -- ensure full removal at/above vanish height (snap to zero to avoid tiny residuals)
+        if y >= FOG_VANISH_HEIGHT then
+            atmosphere.Density = 0
+            atmosphere.Haze = 0
+        end
+        -- --------------------------------------------------------------------------------
 
         -- screen shake: start at SHAKE_START_Y, full at SHAKE_FULL_Y
         if y >= SHAKE_START_Y then
