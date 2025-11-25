@@ -1,4 +1,4 @@
--- StormSystem: Smooth altitude sound crossfade + progressive screen shake
+-- Full StormSystem (Sky + Denser Fog + Sound Crossfade + Shake + Emitters)
 -- LocalScript -> StarterPlayerScripts or StarterGui
 
 -- Services
@@ -54,8 +54,19 @@ local THUNDER_IDS = {"4961240438","6767192500","7768747890","6409267922","776875
 -- ===== Fog fade settings (user request) =====
 local FOG_VANISH_HEIGHT = 20000     -- fog removed at/above this height
 local FOG_START_FADE    = 8000      -- begin fading from this height
-local RAIN_FOG_BASE_DENSITY = 0.02  -- very subtle base density when low
-local RAIN_FOG_BASE_HAZE    = 0.8   -- subtle haze
+-- Dense storm fog (user requested denser)
+local RAIN_FOG_BASE_DENSITY = 0.25   -- denser base density
+local RAIN_FOG_BASE_HAZE    = 3.0    -- denser haze
+
+-- ===== Storm skybox IDs you provided (order: bk, dn, ft, lf, rt, up) =====
+local stormSkyExample = {
+    "rbxassetid://246480323", -- Back
+    "rbxassetid://246480523", -- Down
+    "rbxassetid://246480105", -- Front
+    "rbxassetid://246480549", -- Left
+    "rbxassetid://246480565", -- Right
+    "rbxassetid://246480504", -- Up
+}
 
 -- ===== helpers =====
 local function clamp(v, a, b) if v < a then return a elseif v > b then return b else return v end end
@@ -88,22 +99,71 @@ local originalAtmosphere = {
     Haze    = atmosphere.Haze,
 }
 
--- Keep older RAIN_FOG_* definitions for compatibility but we will use the new subtle base
-local RAIN_FOG_BOOST = 0.45
-local RAIN_FOG_DENSITY = math.clamp((originalAtmosphere.Density or 0) + RAIN_FOG_BOOST, 0, 1)
-local RAIN_FOG_HAZE    = (originalAtmosphere.Haze and originalAtmosphere.Haze > 0) and (originalAtmosphere.Haze + 4) or 6
+-- ===== Sky save / apply / restore helpers =====
+local originalSky = nil
+local foundSky = Lighting:FindFirstChildOfClass("Sky")
+if foundSky then
+    originalSky = Instance.new("Sky")
+    originalSky.SkyboxBk = foundSky.SkyboxBk
+    originalSky.SkyboxDn = foundSky.SkyboxDn
+    originalSky.SkyboxFt = foundSky.SkyboxFt
+    originalSky.SkyboxLf = foundSky.SkyboxLf
+    originalSky.SkyboxRt = foundSky.SkyboxRt
+    originalSky.SkyboxUp = foundSky.SkyboxUp
+else
+    originalSky = nil
+end
 
--- Replacement: lightweight setFogEnabled that sets base density but per-frame will modulate by height
+local function applySky(skyIds)
+    if not skyIds or #skyIds < 6 then return end
+    local s = Lighting:FindFirstChildOfClass("Sky")
+    if not s then
+        s = Instance.new("Sky")
+        s.Parent = Lighting
+    end
+    local function toAsset(id)
+        if not id then return "" end
+        local t = tostring(id)
+        if t:match("^rbxassetid://") then return t end
+        return "rbxassetid://"..t
+    end
+    s.SkyboxBk = toAsset(skyIds[1])
+    s.SkyboxDn = toAsset(skyIds[2])
+    s.SkyboxFt = toAsset(skyIds[3])
+    s.SkyboxLf = toAsset(skyIds[4])
+    s.SkyboxRt = toAsset(skyIds[5])
+    s.SkyboxUp = toAsset(skyIds[6])
+    logConsole("Applied new skybox.")
+end
+
+local function restoreOriginalSky()
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v:IsA("Sky") then pcall(function() v:Destroy() end) end
+    end
+    if originalSky then
+        local s = Instance.new("Sky")
+        s.SkyboxBk = originalSky.SkyboxBk
+        s.SkyboxDn = originalSky.SkyboxDn
+        s.SkyboxFt = originalSky.SkyboxFt
+        s.SkyboxLf = originalSky.SkyboxLf
+        s.SkyboxRt = originalSky.SkyboxRt
+        s.SkyboxUp = originalSky.SkyboxUp
+        s.Parent = Lighting
+        logConsole("Restored original skybox.")
+    else
+        logConsole("No original skybox to restore; Sky cleared.")
+    end
+end
+
+-- ===== setFogEnabled (base values only; per-frame modulation below) =====
 local function setFogEnabled(on, logLabel)
     if on then
         atmosphere.Density = RAIN_FOG_BASE_DENSITY
         atmosphere.Haze = RAIN_FOG_BASE_HAZE
-        atmosphere.Color = originalAtmosphere.Color or Color3.fromRGB(200,200,200)
+        atmosphere.Color = originalAtmosphere.Color or Color3.fromRGB(160,160,170)
         atmosphere.Offset = originalAtmosphere.Offset or 0
         atmosphere.Glare = originalAtmosphere.Glare or 0
-        if logLabel then
-            logLabel.Text = logLabel.Text .. "\nFog ENABLED (base density="..tostring(RAIN_FOG_BASE_DENSITY)..")"
-        end
+        if logLabel then logLabel.Text = logLabel.Text .. "\nFog ENABLED (base density="..tostring(RAIN_FOG_BASE_DENSITY)..")" end
         logConsole("Fog ENABLED (base density="..tostring(RAIN_FOG_BASE_DENSITY)..")")
     else
         atmosphere.Density = originalAtmosphere.Density or 0
@@ -111,9 +171,7 @@ local function setFogEnabled(on, logLabel)
         atmosphere.Color = originalAtmosphere.Color or Color3.fromRGB(200,200,200)
         atmosphere.Offset = originalAtmosphere.Offset or 0
         atmosphere.Glare = originalAtmosphere.Glare or 0
-        if logLabel then
-            logLabel.Text = logLabel.Text .. "\nFog DISABLED (restored)"
-        end
+        if logLabel then logLabel.Text = logLabel.Text .. "\nFog DISABLED (restored)" end
         logConsole("Fog DISABLED (restored)")
     end
 end
@@ -149,8 +207,7 @@ for i = 1, EMITTER_COUNT do
     pcall(function() e.EmissionDirection = Enum.NormalId.Bottom end)
     e.RotSpeed = NumberRange.new(0,0)
     e.LightInfluence = 0
-    -- per request: set ZOffset = 0
-    e.ZOffset = 0
+    e.ZOffset = 0 -- per request
     e.Enabled = false
     e.Parent = rainPart
     table.insert(rainEmitters, e)
@@ -163,7 +220,6 @@ local sound_500   = Instance.new("Sound", SoundService); sound_500.Looped = true
 local sound_1000  = Instance.new("Sound", SoundService); sound_1000.Looped = true;  sound_1000.SoundId = SOUND_1000; sound_1000.Volume = 0
 local sound_7000  = Instance.new("Sound", SoundService); sound_7000.Looped = true;  sound_7000.SoundId = SOUND_7000; sound_7000.Volume = 0
 
--- play them silent; they'll be crossfaded
 local function startAllRainSounds()
     pcall(function() sound_low:Play() end)
     pcall(function() sound_500:Play() end)
@@ -177,7 +233,7 @@ local function stopAllRainSounds()
     pcall(function() sound_7000:Stop() end)
 end
 
--- ===== thunder & bright lightning flash (keeps previous logic) =====
+-- ===== lightning flash (big) and thunder =====
 local function lightningFlashBig(duration, intensity, logLabel)
     local origAmbient = Lighting.Ambient
     local origOutdoor = Lighting:FindFirstChild("OutdoorAmbient") and Lighting.OutdoorAmbient or Lighting.Ambient
@@ -233,6 +289,7 @@ local function playThunderWithBigFlash(logLabel)
     thunder.Ended:Connect(function() pcall(function() thunder:Destroy() end) end)
 end
 
+-- thunder loop
 spawn(function()
     while true do
         if thunderEnabled then
@@ -253,7 +310,7 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local frame = Instance.new("Frame", screenGui)
-frame.Size = UDim2.new(0,520,0,320)
+frame.Size = UDim2.new(0,520,0,360)
 frame.AnchorPoint = Vector2.new(0.5,0.5)
 frame.Position = UDim2.new(0.5,0.5)
 frame.BackgroundColor3 = Color3.fromRGB(28,28,28)
@@ -279,44 +336,63 @@ frame.InputChanged:Connect(function(input)
     end
 end)
 
+-- Title
 local title = Instance.new("TextLabel", frame)
 title.Size = UDim2.new(1,-24,0,30); title.Position = UDim2.new(0,12,0,8)
 title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBold; title.TextSize = 20
 title.TextColor3 = Color3.fromRGB(230,230,230); title.Text = "Storm Control (Rain + Fog + Thunder)"
 
+-- Rain button
 local rainBtn = Instance.new("TextButton", frame)
 rainBtn.Size = UDim2.new(0,240,0,44); rainBtn.Position = UDim2.new(0,16,0,56)
-rainBtn.Font = Enum.Font.GothamSemibold; rainBtn.TextSize = 16; rainBtn.TextColor3 = Color3.fromRGB(255,255,255)
-rainBtn.Text = "Toggle Rain + Fog"; rainBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+rainBtn.Font = Enum.Font.GothamSemibold; rainBtn.TextSize = 16
+rainBtn.TextColor3 = Color3.fromRGB(255,255,255)
+rainBtn.Text = "Toggle Rain + Fog"
+rainBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 Instance.new("UICorner", rainBtn).CornerRadius = UDim.new(0,8)
 local rainGrad = Instance.new("UIGradient", rainBtn); rainGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(75,75,75)), ColorSequenceKeypoint.new(1, Color3.fromRGB(40,40,40))}); rainGrad.Rotation = 90
 
+-- Thunder button
 local thunderBtn = Instance.new("TextButton", frame)
 thunderBtn.Size = UDim2.new(0,240,0,44); thunderBtn.Position = UDim2.new(0,264,0,56)
-thunderBtn.Font = Enum.Font.GothamSemibold; thunderBtn.TextSize = 16; thunderBtn.TextColor3 = Color3.fromRGB(255,255,255)
-thunderBtn.Text = "Toggle Thunder"; thunderBtn.BackgroundColor3 = Color3.fromRGB(10,10,10)
+thunderBtn.Font = Enum.Font.GothamSemibold; thunderBtn.TextSize = 16
+thunderBtn.TextColor3 = Color3.fromRGB(255,255,255)
+thunderBtn.Text = "Toggle Thunder"
+thunderBtn.BackgroundColor3 = Color3.fromRGB(10,10,10)
 Instance.new("UICorner", thunderBtn).CornerRadius = UDim.new(0,8)
 local thunderGrad = Instance.new("UIGradient", thunderBtn); thunderGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(0,0,0)), ColorSequenceKeypoint.new(1, Color3.fromRGB(255,220,0))}); thunderGrad.Rotation = 45
 
+-- Sky toggle button
+local skyBtn = Instance.new("TextButton", frame)
+skyBtn.Size = UDim2.new(0,240,0,36); skyBtn.Position = UDim2.new(0,16,0,112)
+skyBtn.Font = Enum.Font.GothamSemibold; skyBtn.TextSize = 14
+skyBtn.TextColor3 = Color3.fromRGB(255,255,255)
+skyBtn.Text = "Toggle Storm Sky"
+skyBtn.BackgroundColor3 = Color3.fromRGB(45,45,45)
+Instance.new("UICorner", skyBtn).CornerRadius = UDim.new(0,6)
+
+-- Log label
 local logLabel = Instance.new("TextLabel", frame)
-logLabel.Size = UDim2.new(1, -24, 0, 160); logLabel.Position = UDim2.new(0,12,0,116)
+logLabel.Size = UDim2.new(1, -24, 0, 196); logLabel.Position = UDim2.new(0,12,0,152)
 logLabel.BackgroundColor3 = Color3.fromRGB(18,18,18); logLabel.TextColor3 = Color3.fromRGB(200,200,200)
 logLabel.Font = Enum.Font.SourceSans; logLabel.TextSize = 14; logLabel.TextWrapped = true; logLabel.TextXAlignment = Enum.TextXAlignment.Left; logLabel.TextYAlignment = Enum.TextYAlignment.Top
 logLabel.Text = "Logs:"
 Instance.new("UICorner", logLabel).CornerRadius = UDim.new(0,6)
 
--- hover animations
+-- Hover animation helper
 local function addHover(btn)
     btn.MouseEnter:Connect(function() pcall(function() TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Quad), {BackgroundColor3 = btn.BackgroundColor3 + Color3.new(0.06,0.06,0.06)}):Play() end) end)
     btn.MouseLeave:Connect(function() pcall(function() TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Quad), {BackgroundColor3 = btn.BackgroundColor3 - Color3.new(0.06,0.06,0.06)}):Play() end) end)
 end
-addHover(rainBtn); addHover(thunderBtn)
+addHover(rainBtn); addHover(thunderBtn); addHover(skyBtn)
 
 -- ===== state vars =====
 local rainEnabled = false
 local thunderEnabled = false
 local menuOpen = true
+local skyApplied = false
 
+-- Rain toggle behavior
 rainBtn.MouseButton1Click:Connect(function()
     rainEnabled = not rainEnabled
     for _, e in ipairs(rainEmitters) do e.Enabled = rainEnabled end
@@ -326,17 +402,35 @@ rainBtn.MouseButton1Click:Connect(function()
         logLabel.Text = logLabel.Text .. "\nRain+Fog ENABLED"
     else
         stopAllRainSounds()
-        -- set volumes to 0 just in case
         sound_low.Volume = 0; sound_500.Volume = 0; sound_1000.Volume = 0; sound_7000.Volume = 0
         logLabel.Text = logLabel.Text .. "\nRain+Fog DISABLED"
     end
 end)
 
+-- Thunder toggle
 thunderBtn.MouseButton1Click:Connect(function()
     thunderEnabled = not thunderEnabled
     logLabel.Text = logLabel.Text .. "\nThunder "..(thunderEnabled and "ENABLED" or "DISABLED")
 end)
 
+-- Sky toggle: apply storm sky or restore original
+skyBtn.MouseButton1Click:Connect(function()
+    skyApplied = not skyApplied
+    if skyApplied then
+        applySky(stormSkyExample)
+        -- darken atmosphere color slightly for storm mood
+        atmosphere.Color = Color3.fromRGB(140,140,150)
+        logLabel.Text = logLabel.Text .. "\nStorm sky applied."
+        logConsole("Storm sky applied.")
+    else
+        restoreOriginalSky()
+        atmosphere.Color = originalAtmosphere.Color or Color3.fromRGB(200,200,200)
+        logLabel.Text = logLabel.Text .. "\nStorm sky restored."
+        logConsole("Storm sky restored.")
+    end
+end)
+
+-- M toggle for menu
 UserInput.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.M then
@@ -348,7 +442,7 @@ UserInput.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- ===== Per-frame update: position rain part, compute smooth crossfade volumes, apply shake =====
+-- ===== Per-frame update: position rain part, sound crossfade, fog fade, shake =====
 RunService.Heartbeat:Connect(function(dt)
     local char = player.Character
     if not char then return end
@@ -361,25 +455,20 @@ RunService.Heartbeat:Connect(function(dt)
     if rainEnabled then
         local y = hrp.Position.Y
 
-        -- compute smooth contributions
-        -- low sound decreases around 400..600
+        -- compute smooth contributions for sound crossfade
         local lowFadeOut = smoothstep(BLEND_500_MIN, BLEND_500_MAX, y) -- 0..1
         local vol_low = clamp(1 - lowFadeOut, 0, 1)
 
-        -- 500 sound: fades in around 400..600 and fades out around 900..1100
         local midIn = smoothstep(BLEND_500_MIN, BLEND_500_MAX, y)
         local midOut = smoothstep(BLEND_500_1000_MIN, BLEND_500_1000_MAX, y)
         local vol_500 = clamp(midIn * (1 - midOut), 0, 1)
 
-        -- 1000 sound: fades in around 900..1100 and fades out around 4000..10000
         local highIn = smoothstep(BLEND_500_1000_MIN, BLEND_500_1000_MAX, y)
         local highOut = smoothstep(BLEND_1000_7000_MIN, BLEND_1000_7000_MAX, y)
         local vol_1000 = clamp(highIn * (1 - highOut), 0, 1)
 
-        -- 7000+ sound: ramps up from 4000..10000
         local vol_7000 = clamp(smoothstep(BLEND_1000_7000_MIN, BLEND_1000_7000_MAX, y), 0, 1)
 
-        -- normalize if sum > 1 (avoid overall loudness spike) — keep relative shape
         local total = vol_low + vol_500 + vol_1000 + vol_7000
         if total > 1 then
             vol_low = vol_low / total
@@ -388,16 +477,15 @@ RunService.Heartbeat:Connect(function(dt)
             vol_7000 = vol_7000 / total
         end
 
-        -- apply volumes smoothly using TweenService (small tweens) for extra smoothing
-        local ok, _ = pcall(function()
+        -- apply volumes (smooth by direct set; sounds looped already)
+        pcall(function()
             sound_low.Volume   = vol_low
             sound_500.Volume   = vol_500
             sound_1000.Volume  = vol_1000
             sound_7000.Volume  = vol_7000
         end)
 
-        -- ----- NEW: Height-based fog modulation (smooth fade to 0 at 20,000 studs) -----
-        -- compute scale: 1 at/below FOG_START_FADE, 0 at/above FOG_VANISH_HEIGHT, linear in between
+        -- ----- Fog height modulation: fade smoothly to 0 at FOG_VANISH_HEIGHT -----
         local scale = 1
         if y <= FOG_START_FADE then
             scale = 1
@@ -405,21 +493,16 @@ RunService.Heartbeat:Connect(function(dt)
             scale = clamp(1 - ((y - FOG_START_FADE) / math.max(1, FOG_VANISH_HEIGHT - FOG_START_FADE)), 0, 1)
         end
 
-        -- smoothing factor per-frame for gentle transitions
         local smoothFactor = 0.12
-
-        -- target values (fog off if scale==0)
         local targetDensity = RAIN_FOG_BASE_DENSITY * scale
         local targetHaze = RAIN_FOG_BASE_HAZE * math.max(0.12, scale)
 
-        -- apply exponential smoothing so atmosphere changes are gradual
         local currentDensity = atmosphere.Density or 0
         atmosphere.Density = currentDensity + (targetDensity - currentDensity) * smoothFactor
 
         local currentHaze = atmosphere.Haze or 0
         atmosphere.Haze = currentHaze + (targetHaze - currentHaze) * smoothFactor
 
-        -- ensure full removal at/above vanish height (snap to zero to avoid tiny residuals)
         if y >= FOG_VANISH_HEIGHT then
             atmosphere.Density = 0
             atmosphere.Haze = 0
@@ -427,23 +510,19 @@ RunService.Heartbeat:Connect(function(dt)
         -- --------------------------------------------------------------------------------
 
         -- screen shake: start at SHAKE_START_Y, full at SHAKE_FULL_Y
-        if y >= SHAKE_START_Y then
+        if y >= SHAKE_START_Y and camera and camera:IsA("Camera") then
+            -- use current camera CFrame as base each frame to avoid drift
+            local base = camera.CFrame
             local t = clamp((y - SHAKE_START_Y) / math.max(1, SHAKE_FULL_Y - SHAKE_START_Y), 0, 1)
             local baseAmp = lerp(SHAKE_BASE_AMPLITUDE, SHAKE_MAX_AMPLITUDE, t)
-            -- further scale if above full height
             if y > SHAKE_FULL_Y then
-                baseAmp = baseAmp * (1 + (y - SHAKE_FULL_Y) / 10000) -- slight growth beyond 7000
+                baseAmp = baseAmp * (1 + (y - SHAKE_FULL_Y) / 10000)
             end
-            -- smooth noise-based offset (uses tick for time factor)
             local time = tick()
             local ox = (math.noise(time * 0.8, 0) - 0.5) * 2 * baseAmp
             local oy = (math.noise(0, time * 0.9) - 0.5) * 2 * baseAmp
             local oz = (math.noise(time * 0.7, 1) - 0.5) * 2 * (baseAmp * 0.5)
-            -- apply to camera safely
-            if camera and camera:IsA("Camera") then
-                local base = camera.CFrame
-                camera.CFrame = base * CFrame.new(ox, oy, oz)
-            end
+            camera.CFrame = base * CFrame.new(ox, oy, oz)
         end
     end
 end)
